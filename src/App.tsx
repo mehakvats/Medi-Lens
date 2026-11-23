@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { doctorQuestions, getParameter, initialReports, type Parameter, type Report, type Status } from './data'
 import { Icons } from './icons'
+import { extractReportFromImage } from './reportExtractor'
 
 type Page = 'Overview' | 'Reports' | 'Compare' | 'Trends' | 'Questions' | 'Privacy'
 type Screen = 'landing' | 'workspace'
@@ -82,26 +83,36 @@ function TrendChart({ reports, canonicalName }: { reports: Report[]; canonicalNa
   </div>
 }
 
-function UploadDialog({ onClose, onImport }: { onClose: () => void; onImport: (fileName: string) => void }) {
+function UploadDialog({ onClose, onImport }: { onClose: () => void; onImport: (report: Report) => void }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [file, setFile] = useState<File | null>(null)
   const [error, setError] = useState('')
   const [stage, setStage] = useState<number | null>(null)
+  const [progress, setProgress] = useState(0)
   const stages = ['Document received', 'Reading report', 'Extracting parameters', 'Preparing your summary']
   const pickFile = (candidate?: File) => {
     if (!candidate) return
-    const supported = ['application/pdf', 'image/jpeg', 'image/png'].includes(candidate.type)
-    if (!supported) { setError('Please choose a PDF, JPG, JPEG, or PNG file.'); return }
+    const supported = ['image/jpeg', 'image/png'].includes(candidate.type)
+    if (!supported) { setError('Image reading currently supports JPG, JPEG, and PNG files.'); return }
     if (candidate.size > 10 * 1024 * 1024) { setError('This file is over the 10 MB limit.'); return }
     setError(''); setFile(candidate)
   }
-  const beginDemoImport = () => {
+  const beginExtraction = async () => {
     if (!file) return
     setStage(0)
-    stages.forEach((_, index) => window.setTimeout(() => {
-      setStage(index + 1)
-      if (index === stages.length - 1) window.setTimeout(() => onImport(file.name), 520)
-    }, (index + 1) * 520))
+    setError('')
+    try {
+      setStage(1)
+      const report = await extractReportFromImage(file, (update) => {
+        setStage(update.stage === 'reading' ? 1 : 2)
+        setProgress(update.progress)
+      })
+      setStage(3)
+      onImport(report)
+    } catch (reason) {
+      setStage(null)
+      setError(reason instanceof Error ? reason.message : 'We could not read this image. Try a clearer report photo.')
+    }
   }
   return <div className="modal-backdrop" role="presentation"><section className="modal upload-modal" role="dialog" aria-modal="true" aria-labelledby="upload-title">
     <button className="icon-button modal__close" onClick={onClose} aria-label="Close upload">{Icons.close()}</button>
@@ -109,21 +120,21 @@ function UploadDialog({ onClose, onImport }: { onClose: () => void; onImport: (f
       <p className="eyebrow">Add a report</p><h2 id="upload-title">Bring your report into focus.</h2>
       <p className="modal__intro">Upload a lab report to add it to this private workspace.</p>
       <div className={`dropzone ${file ? 'dropzone--ready' : ''}`} onClick={() => inputRef.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); pickFile(event.dataTransfer.files[0]) }}>
-        <input ref={inputRef} className="sr-only" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" onChange={(event) => pickFile(event.target.files?.[0])}/>
+        <input ref={inputRef} className="sr-only" type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" onChange={(event) => pickFile(event.target.files?.[0])}/>
         <div className="dropzone__icon">{file ? <Icons.check/> : <Icons.upload/>}</div>
         <strong>{file ? file.name : 'Drop your report here'}</strong>
         <span>{file ? `${(file.size / 1024 / 1024).toFixed(1)} MB · ready to add` : 'or browse from your device'}</span>
       </div>
-      <p className="file-note">PDF, JPG, PNG · Max 10 MB</p>
+      <p className="file-note">JPG, PNG · Max 10 MB</p>
       {error && <p className="form-error"><Icons.alert size={16}/>{error}</p>}
-      <div className="modal__footer"><button className="text-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={!file} onClick={beginDemoImport}>Continue <Icons.arrow size={17}/></button></div>
-      <p className="demo-note"><Icons.info size={15}/> Demo mode: this browser-only workspace creates a clearly labelled sample analysis and does not transmit your selected file.</p>
+      <div className="modal__footer"><button className="text-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={!file} onClick={beginExtraction}>Read image <Icons.arrow size={17}/></button></div>
+      <p className="demo-note"><Icons.lock size={15}/> Your image is processed locally in this browser. It is not uploaded or retained by MediLens.</p>
     </> : <>
-      <p className="eyebrow">Preparing a demo report</p><h2 id="upload-title">Following the document carefully.</h2>
+      <p className="eyebrow">Reading your image locally</p><h2 id="upload-title">Looking carefully at the report.</h2>
       <div className="processing-list">{stages.map((item, index) => <div className={`processing-step ${index < stage ? 'processing-step--done' : index === stage ? 'processing-step--active' : ''}`} key={item}>
-        <span className="processing-step__mark">{index < stage ? <Icons.check size={16}/> : <i/>}</span><span>{item}</span>{index < stage && <small>Done</small>}
+        <span className="processing-step__mark">{index < stage ? <Icons.check size={16}/> : <i/>}</span><span>{item}{index === 1 && stage === 1 ? ` ${progress}%` : ''}</span>{index < stage && <small>Done</small>}
       </div>)}</div>
-      <p className="demo-note"><Icons.info size={15}/> This illustrates the product flow with sample structured values. It does not read or retain the uploaded medical file.</p>
+      <p className="demo-note"><Icons.lock size={15}/> OCR runs in this browser. It may take a moment on the first image while the local language model loads.</p>
     </>}
   </section></div>
 }
@@ -174,11 +185,8 @@ function App() {
   const latest = reports.slice().sort((a, b) => b.date.localeCompare(a.date))[0]
   const previous = reports.slice().sort((a, b) => b.date.localeCompare(a.date))[1]
   const activate = (destination: Page) => { setPage(destination); setMobileMenu(false); window.scrollTo({ top: 0, behavior: 'smooth' }) }
-  const importDemo = (name: string) => {
-    const today = new Date().toISOString().slice(0, 10)
-    const label = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date()).replace(',', '')
-    const seeded: Report = { ...initialReports[0], id: `upload-${Date.now()}`, type: name.replace(/\.[^.]+$/, '') || 'Uploaded report', date: today, dateLabel: label, isDemo: false, quality: 'Good', qualityNote: 'Sample values are displayed in this browser-only demo.' }
-    setReports((existing) => [seeded, ...existing]); setUploadOpen(false); setDetailReport(seeded); setNotice('Sample report added to your workspace. The selected file was not uploaded or retained.')
+  const importReport = (report: Report) => {
+    setReports((existing) => [report, ...existing]); setUploadOpen(false); setDetailReport(report); setNotice('Your report image was processed locally and its extracted values were added to this session.')
   }
   if (screen === 'landing') return <Landing enter={() => setScreen('workspace')} />
   return <div className="app-shell">
@@ -188,7 +196,7 @@ function App() {
       <main className="workspace-content">{page === 'Overview' && <Overview latest={latest} previous={previous} reports={reports} onOpen={setDetailReport} onPage={activate}/>} {page === 'Reports' && <ReportsPage reports={reports} onOpen={setDetailReport} onUpload={() => setUploadOpen(true)}/>} {page === 'Compare' && <ComparePage reports={reports} onOpen={setDetailReport}/>} {page === 'Trends' && <TrendsPage reports={reports}/>} {page === 'Questions' && <QuestionsPage/>} {page === 'Privacy' && <PrivacyPage dark={dark} setDark={setDark} onReset={() => { if (window.confirm('Restore the original demo reports?')) { setReports(initialReports); setNotice('Your demo workspace has been restored.') } }}/>}</main>
     </div>
     <nav className="mobile-nav" aria-label="Mobile navigation">{navItems.slice(0, 5).map(({ label, icon }) => { const Icon = Icons[icon]; return <button key={label} className={page === label ? 'is-active' : ''} onClick={() => activate(label)}><Icon size={19}/><span>{label}</span></button> })}</nav>
-    {uploadOpen && <UploadDialog onClose={() => setUploadOpen(false)} onImport={importDemo}/>} {detailReport && <DetailDialog report={detailReport} onClose={() => setDetailReport(null)}/>} {mobileMenu && <button aria-label="Close menu overlay" className="mobile-overlay" onClick={() => setMobileMenu(false)}/>} 
+    {uploadOpen && <UploadDialog onClose={() => setUploadOpen(false)} onImport={importReport}/>} {detailReport && <DetailDialog report={detailReport} onClose={() => setDetailReport(null)}/>} {mobileMenu && <button aria-label="Close menu overlay" className="mobile-overlay" onClick={() => setMobileMenu(false)}/>} 
   </div>
 }
 
@@ -239,7 +247,7 @@ function QuestionsPage() {
 }
 
 function PrivacyPage({ dark, setDark, onReset }: { dark: boolean; setDark: (value: boolean) => void; onReset: () => void }) {
-  return <><section className="page-heading"><div><p className="eyebrow">CONTROL CENTRE</p><h1>Privacy & settings</h1><p>Understand what your workspace keeps and stay in control of it.</p></div></section><section className="privacy-grid"><article className="privacy-panel privacy-panel--lead"><div className="privacy-panel__icon">{Icons.shield({ size: 23 })}</div><span className="section-label">YOUR DATA, YOUR CONTROL</span><h2>This demo keeps information in your browser only.</h2><p>Selected files are not transmitted. Imported sample reports are visible only in the current browser session.</p><span className="privacy-state"><Icons.lock size={15}/> Local demo workspace</span></article><article className="settings-panel"><h2>Preferences</h2><div className="settings-row"><div><strong>Appearance</strong><span>Choose your workspace theme.</span></div><button className="toggle" onClick={() => setDark(!dark)} aria-pressed={dark}><i className={dark ? 'is-on' : ''}/><span>{dark ? 'Dark' : 'Light'}</span></button></div><div className="settings-row"><div><strong>Language</strong><span>Used for plain-language explanations.</span></div><button className="select-button">English {Icons.chevron({ size: 15 })}</button></div></article><article className="settings-panel settings-panel--wide"><h2>Demo data</h2><p>Restore the original three sample reports and remove any reports added during this session.</p><button className="danger-button" onClick={onReset}>Restore demo workspace</button></article></section><section className="privacy-faq"><span className="section-label">IN A PRODUCTION ACCOUNT</span><h2>What MediLens would store</h2><div><article><h3>Reports and structured results</h3><p>Original report metadata, extracted parameters, and your preferences would be stored in your private account.</p></article><article><h3>Deletion controls</h3><p>You would be able to delete individual reports and request account deletion from this space.</p></article><article><h3>AI processing</h3><p>Any provider processing would be disclosed before use, with structured outputs validated before they are shown.</p></article></div></section></>
+  return <><section className="page-heading"><div><p className="eyebrow">CONTROL CENTRE</p><h1>Privacy & settings</h1><p>Understand what your workspace keeps and stay in control of it.</p></div></section><section className="privacy-grid"><article className="privacy-panel privacy-panel--lead"><div className="privacy-panel__icon">{Icons.shield({ size: 23 })}</div><span className="section-label">YOUR DATA, YOUR CONTROL</span><h2>Report images are read in your browser.</h2><p>When you choose an image, OCR runs locally on this device. MediLens does not upload or retain the image.</p><span className="privacy-state"><Icons.lock size={15}/> Local image processing</span></article><article className="settings-panel"><h2>Preferences</h2><div className="settings-row"><div><strong>Appearance</strong><span>Choose your workspace theme.</span></div><button className="toggle" onClick={() => setDark(!dark)} aria-pressed={dark}><i className={dark ? 'is-on' : ''}/><span>{dark ? 'Dark' : 'Light'}</span></button></div><div className="settings-row"><div><strong>Language</strong><span>Used for plain-language explanations.</span></div><button className="select-button">English {Icons.chevron({ size: 15 })}</button></div></article><article className="settings-panel settings-panel--wide"><h2>Demo data</h2><p>Restore the original three sample reports and remove any reports added during this session.</p><button className="danger-button" onClick={onReset}>Restore demo workspace</button></article></section><section className="privacy-faq"><span className="section-label">IN A PRODUCTION ACCOUNT</span><h2>What MediLens would store</h2><div><article><h3>Reports and structured results</h3><p>Original report metadata, extracted parameters, and your preferences would be stored in your private account.</p></article><article><h3>Deletion controls</h3><p>You would be able to delete individual reports and request account deletion from this space.</p></article><article><h3>AI processing</h3><p>Any provider processing would be disclosed before use, with structured outputs validated before they are shown.</p></article></div></section></>
 }
 
 export default App
