@@ -15,7 +15,7 @@ MediLens is a calm, premium personal health-intelligence interface that helps pe
 - Parameter trend visualisation with laboratory reference ranges
 - Doctor-discussion prompts with working copy actions
 - Accessible controls, keyboard focus styles, intentional mobile navigation, and a light/dark preference
-- A transparent upload-flow demonstration: selected files are validated locally and never transmitted or retained in this browser-only build
+- Browser-local OCR for JPG/PNG lab-report images: selected images are read on-device and never transmitted or retained
 
 ## Product decisions
 
@@ -74,12 +74,12 @@ POST   /api/questions
 
 ## Safety and privacy
 
-- Only accepted upload types are PDF, JPG, JPEG, and PNG; files over 10 MB are rejected locally.
+- OCR accepts JPG, JPEG, and PNG report images up to 10 MB; files are rejected locally when they do not meet these constraints.
 - The demo never uploads the selected file.
 - A real system should validate file signatures, scan uploads, authorise every resource by user, rate-limit endpoints, hash passwords with Argon2/bcrypt, use secure HTTP-only sessions or carefully scoped JWTs, encrypt storage, and retain clear deletion/audit controls.
 - AI output should be constrained to a versioned JSON schema and rejected if it includes missing, malformed, or unsupported fields.
 
 ## Limitations
 
-This client-only showcase does not implement authentication, OCR/PDF parsing, durable storage, server-side upload handling, or a live AI provider. Its goal is to demonstrate the product experience honestly while preserving the boundaries required for real health data.
+This client-only showcase does not implement authentication, PDF parsing, durable storage, server-side upload handling, or a live AI provider. It performs on-device image OCR for a defined set of common parameters (HbA1c, hemoglobin, LDL, vitamin D, and TSH); all extracted values must be checked against the original report.
 
